@@ -242,7 +242,7 @@
 		var member_id = $(this).val();
 		if(member_id != ''){
 			$.ajax({
-				url: "{{ url('admin/savings_accounts/get_group_account_by_member_id/') }}/" + member_id,
+				url: "{{ url('admin/savings_accounts/get_group_account_by_savings_account_id/') }}/" + member_id,
 				success: function(data){
 					var json = JSON.parse(JSON.stringify(data));
 					$("#debit_account1").html('');
