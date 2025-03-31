@@ -274,82 +274,127 @@ class TransactionController extends Controller
 	 * @return \Illuminate\Http\Response
 	 */
 	public function update(Request $request, $id)
-	{
-		$validator = Validator::make($request->all(), [
-			'trans_date' => 'required',
-			'member_id' => 'required',
-			'savings_account_id' => 'required',
-			'amount' => 'required|numeric',
-			'status' => 'required',
-			'description' => 'required',
-		], [
-			'dr_cr.in' => 'Transaction must have a debit or credit',
-		]);
+{
+  
+		    // Determine if it's group or individual based on submitted savings_product_id (1 = Individual, 2 = Group)
+			$isGroup = ($request->input('savings_product_id') == 2);
 
-		if ($validator->fails()) {
-			if ($request->ajax()) {
-				return response()->json(['result' => 'error', 'message' => $validator->errors()->all()]);
+			// Validation rules
+			$rules = [
+				'trans_date' => 'required|date',
+				'savings_product_id' => 'required',
+				'amount' => 'required|numeric|min:0',
+				'dr_cr' => 'required',
+				'type' => 'required',
+				'status' => 'required',
+				'description' => 'required',
+			];
+		
+			if ($isGroup) {
+				$rules['group_id'] = 'required';  // Only for group savings
+				$rules['savings_account_id'] = 'required';  // Group member account
 			} else {
-				return redirect()->route('transactions.edit', $id)
-					->withErrors($validator)
-					->withInput();
-			}
-		}
-
-		$transaction = Transaction::find($id);
-
-		$accountType = SavingsAccount::find($request->savings_account_id)->savings_type;
-
-		if (!$accountType) {
-			return back()
-				->with('error', _lang('Account type not found'))
-				->withInput();
-		}
-
-		if ($request->dr_cr == 'dr') {
-			if ($accountType->allow_withdraw == 0) {
-				return back()
-					->with('error', _lang('Withdraw is not allowed for') . ' ' . $accountType->name)
-					->withInput();
+				$rules['member_id'] = 'required';  // Only for individual savings
+				$rules['savings_account_id'] = 'required';  // Individual member's account
 			}
 
-			$account_balance = get_account_balance($request->savings_account_id, $request->member_id);
-			$previousAmount = $request->member_id == $transaction->member_id ? $transaction->amount : 0;
-
-			if ((($account_balance + $previousAmount) - $request->amount) < $accountType->minimum_account_balance) {
-				return back()
-					->with('error', _lang('Sorry Minimum account balance will be exceeded'))
-					->withInput();
+			if($request->dr_cr == 'cr') {
+				$rules['collector_id'] = 'required';
+			} else {
+				$rules['collector_id'] = null; // Only for Withdrawal
 			}
 
-			if (($account_balance + $previousAmount) < $request->amount) {
-				return back()
-					->with('error', _lang('Insufficient account balance'))
-					->withInput();
-			}
-		} else {
-			if ($request->amount < $accountType->minimum_deposit_amount) {
-				return back()
-					->with('error', _lang('You must deposit minimum') . ' ' . $accountType->minimum_deposit_amount . ' ' . $accountType->currency->name)
-					->withInput();
-			}
-		}
+			$validator = Validator::make($request->all(), $rules, [
+				'dr_cr.in' => 'Transaction must have a debit or credit',
+			]);
 
-		$transaction->trans_date = $request->input('trans_date');
-		$transaction->member_id = $request->input('member_id');
-		$transaction->savings_account_id = $request->input('savings_account_id');
-		$transaction->amount = $request->input('amount');
-		$transaction->status = $request->input('status');
-		$transaction->description = $request->input('description');
-		$transaction->updated_user_id = auth()->id();
-		$transaction->save();
+    if ($validator->fails()) {
+        if ($request->ajax()) {
+            return response()->json(['result' => 'error', 'message' => $validator->errors()->all()]);
+        } else {
+            return redirect()->route('transactions.edit', $id)
+                ->withErrors($validator)
+                ->withInput();
+        }
+    }
 
-		if (!$request->ajax()) {
-			return redirect()->route('transactions.index')->with('success', _lang('Updated Successfully'));
-		} else {
-			return response()->json(['result' => 'success', 'action' => 'update', 'message' => _lang('Updated Successfully'), 'data' => $transaction, 'table' => '#transactions_table']);
-		}
-	}
+    $transaction = Transaction::find($id);
+    $account = SavingsAccount::find($request->savings_account_id);
+
+    if (!$account) {
+        return back()
+            ->with('error', _lang('Account not found'))
+            ->withInput();
+    }
+
+    $accountType = $account->savings_type;
+    $isGroupTransaction = GroupMember::where('savings_account_id', $request->savings_account_id)->exists();
+
+    // Validate withdrawal conditions for both individual and group accounts
+    if ($request->dr_cr == 'dr') {
+        if ($accountType->allow_withdraw == 0) {
+            return back()
+                ->with('error', _lang('Withdraw is not allowed for') . ' ' . $accountType->name)
+                ->withInput();
+        }
+
+        $account_balance = get_account_balance($request->savings_account_id, $request->member_id);
+        $previousAmount = $request->member_id == $transaction->member_id ? $transaction->amount : 0;
+
+        if ((($account_balance + $previousAmount) - $request->amount) < $accountType->minimum_account_balance) {
+            return back()
+                ->with('error', _lang('Sorry, minimum account balance will be exceeded'))
+                ->withInput();
+        }
+
+        if (($account_balance + $previousAmount) < $request->amount) {
+            return back()
+                ->with('error', _lang('Insufficient account balance'))
+                ->withInput();
+        }
+    } else {
+        if ($request->amount < $accountType->minimum_deposit_amount) {
+            return back()
+                ->with('error', _lang('You must deposit at least') . ' ' . $accountType->minimum_deposit_amount . ' ' . $accountType->currency->name)
+                ->withInput();
+        }
+    }
+
+    // Update transaction
+    $transaction->trans_date = $request->input('trans_date');
+    $transaction->member_id = $request->input('member_id');
+    $transaction->savings_account_id = $request->input('savings_account_id');
+    $transaction->amount = $request->input('amount');
+    $transaction->status = $request->input('status');
+    $transaction->description = $request->input('description');
+	$transaction->collector_id = $request->input('collector_id');
+    $transaction->updated_user_id = auth()->id();
+    $transaction->save();
+
+    // If it's a group transaction, update the GroupMember table
+    if ($isGroupTransaction) {
+        $groupMember = GroupMember::where('savings_account_id', $request->savings_account_id)->first();
+        
+        if ($groupMember) {
+            $groupMember->total_contributed = $request->amount;
+            $groupMember->updated_at = now();
+            $groupMember->save();
+        }
+    }
+
+    if (!$request->ajax()) {
+        return redirect()->route('transactions.index')->with('success', _lang('Updated Successfully'));
+    } else {
+        return response()->json([
+            'result' => 'success',
+            'action' => 'update',
+            'message' => _lang('Updated Successfully'),
+            'data' => $transaction,
+            'table' => '#transactions_table'
+        ]);
+    }
+}
+
 
 	/**
 	 * Remove the specified resource from storage.
